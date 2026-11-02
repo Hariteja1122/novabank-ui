@@ -1,0 +1,49 @@
+# NovaBank ui in the "dev" environment (Cloud Run, Knative service YAML).
+# Deployed by cloudbuild.yaml with:  gcloud run services replace deploy/environments/dev.yaml
+# ${PROJECT_ID}, ${PROJECT_NUMBER}, ${REGION} and ${IMAGE} are filled in at deploy time.
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: novabank-ui-dev
+  labels:
+    app: novabank
+    env: dev
+    component: ui
+  annotations:
+    run.googleapis.com/ingress: all
+spec:
+  template:
+    metadata:
+      labels:
+        app: novabank
+        env: dev
+        component: ui
+      annotations:
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "2"
+        run.googleapis.com/startup-cpu-boost: "true"
+        run.googleapis.com/execution-environment: gen2
+    spec:
+      serviceAccountName: novabank-run-dev@${PROJECT_ID}.iam.gserviceaccount.com
+      containerConcurrency: 80
+      timeoutSeconds: 60
+      containers:
+        - name: ui
+          image: ${IMAGE}
+          ports:
+            - name: http1
+              containerPort: 8080
+          resources:
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          env:
+            - name: API_GATEWAY_URL
+              value: "https://novabank-gateway-dev-${PROJECT_NUMBER}.${REGION}.run.app"
+            - name: NOVABANK_ENV
+              value: "dev"
+          startupProbe:
+            tcpSocket:
+              port: 8080
+            periodSeconds: 3
+            failureThreshold: 10
