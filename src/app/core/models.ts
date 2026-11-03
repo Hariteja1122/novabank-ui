@@ -60,7 +60,7 @@ export interface Beneficiary {
   createdAt: string;
 }
 
-/** Each service keeps its own audit log; the source picks which one to read. */
+/** Which service reported an audit event. All of them land in one central log (auth-service). */
 export type AuditSource = 'auth' | 'accounts' | 'transactions';
 export type AuditOutcome = 'SUCCESS' | 'FAILURE';
 
@@ -70,7 +70,7 @@ export type AuditOutcome = 'SUCCESS' | 'FAILURE';
  */
 export interface AuditEntry {
   id: number;
-  occurredAt: string;
+  createdAt: string;
   service: AuditSource;
   actorId: number | null;
   actorRole: string | null;

@@ -123,20 +123,24 @@ function record(t: Omit<Transaction, 'id' | 'reference' | 'createdAt' | 'complet
 // ---------------------------------------------------------------- audit log
 // Mirrors the services: one row per state-changing request, success or failure.
 // Reads are never recorded, and no part of a password ever goes into a row.
-const audit: Record<AuditSource, AuditEntry[]> = { auth: [], accounts: [], transactions: [] };
+const audit: AuditEntry[] = [];
 let auditSeq = 0;
-function audited(source: AuditSource, e: Omit<AuditEntry, 'id' | 'service' | 'correlationId' | 'sourceIp' | 'occurredAt'> & { occurredAt?: string }) {
-  audit[source].unshift({ id: ++auditSeq, service: source, occurredAt: new Date().toISOString(), correlationId: crypto.randomUUID(), sourceIp: '127.0.0.1', ...e });
+function audited(source: AuditSource, e: Omit<AuditEntry, 'id' | 'service' | 'correlationId' | 'sourceIp' | 'createdAt'> & { createdAt?: string }) {
+  audit.unshift({ id: ++auditSeq, service: source, createdAt: new Date().toISOString(), correlationId: crypto.randomUUID(), sourceIp: '127.0.0.1', ...e });
+  audit.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 const row = (action: string, targetType: string | null, targetId: string | null, actor: User | null, details: Record<string, string> = {}) => ({
   action, targetType, targetId, actorId: actor?.id ?? null, actorRole: actor?.role ?? null, actorEmail: actor?.email ?? null,
   outcome: 'SUCCESS' as const, httpStatus: 200, reason: null, details,
 });
 // A little history so the page has something to show.
-audited('auth', { ...row('LOGIN', 'USER', '3', null), actorEmail: 'john.carter@example.com', outcome: 'FAILURE', httpStatus: 401, reason: 'Wrong password', occurredAt: ago(0, 5) });
-audited('auth', { ...row('LOGIN', null, null, null), actorEmail: 'jon.carter@example.com', outcome: 'FAILURE', httpStatus: 401, reason: 'Unknown email', occurredAt: ago(0, 4) });
-audited('auth', { ...row('LOGIN', 'USER', '7', null), actorEmail: 'david.okafor@example.com', outcome: 'FAILURE', httpStatus: 403, reason: 'Profile is locked', occurredAt: ago(0, 3) });
-audited('auth', { ...row('USER_STATUS_CHANGE', 'USER', '7', users[0], { from: 'ACTIVE', to: 'LOCKED' }), occurredAt: ago(9) });
+audited('auth', { ...row('LOGIN', 'USER', '3', null), actorEmail: 'john.carter@example.com', outcome: 'FAILURE', httpStatus: 401, reason: 'Wrong password', createdAt: ago(0, 5) });
+audited('auth', { ...row('LOGIN', null, null, null), actorEmail: 'jon.carter@example.com', outcome: 'FAILURE', httpStatus: 401, reason: 'Unknown email', createdAt: ago(0, 4) });
+audited('auth', { ...row('LOGIN', 'USER', '7', null), actorEmail: 'david.okafor@example.com', outcome: 'FAILURE', httpStatus: 403, reason: 'Profile is locked', createdAt: ago(0, 3) });
+audited('auth', { ...row('USER_STATUS_CHANGE', 'USER', '7', users[0], { from: 'ACTIVE', to: 'LOCKED' }), createdAt: ago(9) });
+audited('accounts', { ...row('ACCOUNT_STATUS_CHANGE', 'ACCOUNT', '100245180099', users[0], { from: 'ACTIVE', to: 'FROZEN' }), createdAt: ago(6) });
+audited('accounts', { ...row('ACCOUNT_STATUS_CHANGE', 'ACCOUNT', '100245180057', users[1], { from: 'ACTIVE', to: 'CLOSED' }), outcome: 'FAILURE', httpStatus: 400, reason: 'Only accounts with a zero balance can be closed', createdAt: ago(2) });
+audited('transactions', { ...row('DEPOSIT', 'TRANSACTION', 'NB2600475140', users[0], { toAccount: '100245180081', amount: '1500.24' }), httpStatus: 201, createdAt: ago(4) });
 
 type Rule = [method: string, pattern: RegExp, source: AuditSource, action: string, targetType: string | null];
 const AUDITED: Rule[] = [
@@ -393,13 +397,14 @@ function route(req: HttpRequest<unknown>, next: Parameters<HttpInterceptorFn>[1]
     to!.balance = Math.round((to!.balance + amount) * 100) / 100;
     return ok(txn, 201);
   }
-  const auditPath = path.match(/^\/api\/admin\/audit\/(auth|accounts|transactions)$/);
-  if (auditPath && m === 'GET') {
+  if (path === '/api/admin/audit' && m === 'GET') {
     const term = q.get('q');
-    const rows = audit[auditPath[1] as AuditSource].filter((e) => (!q.get('action') || e.action === q.get('action')) && (!q.get('outcome') || e.outcome === q.get('outcome'))
-      && (!q.get('actorId') || e.actorId === Number(q.get('actorId'))) && (!q.get('targetId') || e.targetId === q.get('targetId'))
-      && (!term || like(e.actorEmail, term) || like(e.targetId, term) || like(e.correlationId, term))
-      && (!q.get('from') || e.occurredAt >= q.get('from')!) && (!q.get('to') || e.occurredAt < q.get('to')!));
+    const actor = (q.get('actor') ?? '').trim();
+    const rows = audit.filter((e) => (!q.get('action') || e.action === q.get('action')) && (!q.get('service') || e.service === q.get('service'))
+      && (!q.get('outcome') || e.outcome === q.get('outcome'))
+      && (!actor || (/^\d+$/.test(actor) ? e.actorId === Number(actor) : like(e.actorEmail, actor)))
+      && (!term || like(e.targetId, term) || like(e.correlationId, term))
+      && (!q.get('from') || e.createdAt >= q.get('from')!) && (!q.get('to') || e.createdAt < q.get('to')!));
     return ok(page(rows, q));
   }
   if (path === '/api/system/health') {
