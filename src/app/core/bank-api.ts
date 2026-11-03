@@ -75,9 +75,9 @@ export class BankApi {
   adminTransactions(q: { status?: TxnStatus | ''; type?: TxnType | ''; q?: string; page?: number; size?: number }) {
     return this.http.get<Page<Transaction>>(`${this.base}/admin/transactions`, { params: params(q) });
   }
-  /** Read-only. Each source is served by the service that owns that log. */
-  auditLog(source: AuditSource, q: { action?: string; outcome?: AuditOutcome | ''; actorId?: number | null; targetId?: string; q?: string; from?: string | null; to?: string | null; page?: number; size?: number }) {
-    return this.http.get<Page<AuditEntry>>(`${this.base}/admin/audit/${source}`, { params: params(q) });
+  /** Read-only central audit log. `actor` is a user id or part of an email; from/to are ISO instants. */
+  auditLog(q: { action?: string; service?: AuditSource | ''; outcome?: AuditOutcome | ''; actor?: string; q?: string; from?: string | null; to?: string | null; page?: number; size?: number }) {
+    return this.http.get<Page<AuditEntry>>(`${this.base}/admin/audit`, { params: params(q) });
   }
   transactionSummary() { return this.http.get<TransactionSummary>(`${this.base}/admin/transactions/summary`); }
   deposit(body: { toAccount: string; amount: number; description: string | null }, idempotencyKey: string) {
