@@ -4,6 +4,7 @@ const TONE: Record<string, string> = {
   ACTIVE: 'badge-ok', COMPLETED: 'badge-ok', UP: 'badge-ok',
   LOCKED: 'badge-bad', FAILED: 'badge-bad', DOWN: 'badge-bad', CLOSED: 'badge-neutral',
   FROZEN: 'badge-warn', PENDING: 'badge-warn', DEGRADED: 'badge-warn',
+  SUCCESS: 'badge-ok', FAILURE: 'badge-bad',
 };
 
 @Component({

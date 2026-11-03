@@ -2,7 +2,7 @@ import { HttpClient, HttpParams } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { environment } from '../../environments/environment';
 import {
-  Account, AccountStatus, AccountSummary, AccountType, Page, SystemHealth, Transaction,
+  Account, AccountStatus, AccountSummary, AccountType, AuditEntry, AuditOutcome, AuditSource, Beneficiary, Page, SystemHealth, Transaction,
   TransactionSummary, TxnStatus, TxnType, User, UserStatus, UserSummary,
 } from './models';
 
@@ -44,6 +44,16 @@ export class BankApi {
     });
   }
 
+  // ---- customer payees
+  beneficiaries() { return this.http.get<Beneficiary[]>(`${this.base}/beneficiaries`); }
+  addBeneficiary(body: { nickname: string; accountNumber: string }) {
+    return this.http.post<Beneficiary>(`${this.base}/beneficiaries`, body);
+  }
+  renameBeneficiary(id: number, nickname: string) {
+    return this.http.put<Beneficiary>(`${this.base}/beneficiaries/${id}`, { nickname });
+  }
+  deleteBeneficiary(id: number) { return this.http.delete<void>(`${this.base}/beneficiaries/${id}`); }
+
   // ---- admin
   users(q: { role?: string; status?: UserStatus | ''; q?: string; page?: number; size?: number }) {
     return this.http.get<Page<User>>(`${this.base}/admin/users`, { params: params(q) });
@@ -64,6 +74,10 @@ export class BankApi {
   }
   adminTransactions(q: { status?: TxnStatus | ''; type?: TxnType | ''; q?: string; page?: number; size?: number }) {
     return this.http.get<Page<Transaction>>(`${this.base}/admin/transactions`, { params: params(q) });
+  }
+  /** Read-only. Each source is served by the service that owns that log. */
+  auditLog(source: AuditSource, q: { action?: string; outcome?: AuditOutcome | ''; actorId?: number | null; targetId?: string; q?: string; from?: string | null; to?: string | null; page?: number; size?: number }) {
+    return this.http.get<Page<AuditEntry>>(`${this.base}/admin/audit/${source}`, { params: params(q) });
   }
   transactionSummary() { return this.http.get<TransactionSummary>(`${this.base}/admin/transactions/summary`); }
   deposit(body: { toAccount: string; amount: number; description: string | null }, idempotencyKey: string) {

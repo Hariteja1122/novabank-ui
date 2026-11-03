@@ -52,6 +52,40 @@ export interface Transaction {
   direction: Direction | null;
 }
 
+/** A saved payee. Only the nickname can change; a new account number is a new payee. */
+export interface Beneficiary {
+  id: number;
+  nickname: string;
+  accountNumber: string;
+  createdAt: string;
+}
+
+/** Each service keeps its own audit log; the source picks which one to read. */
+export type AuditSource = 'auth' | 'accounts' | 'transactions';
+export type AuditOutcome = 'SUCCESS' | 'FAILURE';
+
+/**
+ * One state-changing request, successful or not. Reads are never recorded. For a failed
+ * LOGIN, actorEmail is the email that was tried and actorId is null.
+ */
+export interface AuditEntry {
+  id: number;
+  occurredAt: string;
+  service: AuditSource;
+  actorId: number | null;
+  actorRole: string | null;
+  actorEmail: string | null;
+  action: string;
+  targetType: string | null;
+  targetId: string | null;
+  outcome: AuditOutcome;
+  httpStatus: number | null;
+  reason: string | null;
+  details: Record<string, string>;
+  correlationId: string | null;
+  sourceIp: string | null;
+}
+
 /** Spring Data page, serialized with PageSerializationMode.VIA_DTO. */
 export interface Page<T> {
   content: T[];
