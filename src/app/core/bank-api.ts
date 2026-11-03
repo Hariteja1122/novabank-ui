@@ -2,7 +2,7 @@ import { HttpClient, HttpParams } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { environment } from '../../environments/environment';
 import {
-  Account, AccountStatus, AccountSummary, AccountType, Page, SystemHealth, Transaction,
+  Account, AccountStatus, AccountSummary, AccountType, Beneficiary, Page, SystemHealth, Transaction,
   TransactionSummary, TxnStatus, TxnType, User, UserStatus, UserSummary,
 } from './models';
 
@@ -43,6 +43,16 @@ export class BankApi {
       headers: { 'Idempotency-Key': idempotencyKey },
     });
   }
+
+  // ---- customer payees
+  beneficiaries() { return this.http.get<Beneficiary[]>(`${this.base}/beneficiaries`); }
+  addBeneficiary(body: { nickname: string; accountNumber: string }) {
+    return this.http.post<Beneficiary>(`${this.base}/beneficiaries`, body);
+  }
+  renameBeneficiary(id: number, nickname: string) {
+    return this.http.put<Beneficiary>(`${this.base}/beneficiaries/${id}`, { nickname });
+  }
+  deleteBeneficiary(id: number) { return this.http.delete<void>(`${this.base}/beneficiaries/${id}`); }
 
   // ---- admin
   users(q: { role?: string; status?: UserStatus | ''; q?: string; page?: number; size?: number }) {

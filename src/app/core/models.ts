@@ -52,6 +52,14 @@ export interface Transaction {
   direction: Direction | null;
 }
 
+/** A saved payee. Only the nickname can change; a new account number is a new payee. */
+export interface Beneficiary {
+  id: number;
+  nickname: string;
+  accountNumber: string;
+  createdAt: string;
+}
+
 /** Spring Data page, serialized with PageSerializationMode.VIA_DTO. */
 export interface Page<T> {
   content: T[];

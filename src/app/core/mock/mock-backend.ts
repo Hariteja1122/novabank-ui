@@ -1,7 +1,7 @@
 import { HttpErrorResponse, HttpInterceptorFn, HttpRequest, HttpResponse } from '@angular/common/http';
 import { Observable, delay, of, throwError } from 'rxjs';
 import {
-  Account, AccountStatus, AccountType, Page, Transaction, TxnStatus, User, UserStatus,
+  Account, AccountStatus, AccountType, Beneficiary, Page, Transaction, TxnStatus, User, UserStatus,
 } from '../models';
 
 /*
@@ -42,6 +42,16 @@ const accounts: Account[] = [
   acct(9, '100245180110', 8, 'CHECKING', 10696.57, 'ACTIVE', 19),
   acct(10, '100245180128', 8, 'SAVINGS', 9344.23, 'ACTIVE', 19),
 ];
+
+// Same payees as novabank-platform/db2/schema/02-sample-data.sql
+const beneficiaries: (Beneficiary & { customerId: number })[] = [
+  { id: 1, customerId: 3, nickname: 'Priya (rent)', accountNumber: '100245180057', createdAt: ago(80) },
+  { id: 2, customerId: 3, nickname: 'Michael Chen', accountNumber: '100245180073', createdAt: ago(41) },
+  { id: 3, customerId: 3, nickname: 'Emily (book club)', accountNumber: '100245180110', createdAt: ago(12) },
+  { id: 4, customerId: 4, nickname: 'John Carter', accountNumber: '100245180031', createdAt: ago(60) },
+];
+let beneficiarySeq = 1000;
+const publicPayee = ({ customerId: _c, ...b }: Beneficiary & { customerId: number }): Beneficiary => b;
 
 const descs = ['Rent share', 'Groceries', 'Utilities', 'Dinner split', 'Moving to savings', 'Gym membership', 'Car repair', 'Concert tickets', 'Insurance premium', 'Freelance invoice'];
 let seq = 0;
@@ -199,6 +209,41 @@ export const mockBackendInterceptor: HttpInterceptorFn = (req, next) => {
     to!.balance = Math.round((to!.balance + amount) * 100) / 100;
     idem.set(key, txn);
     return ok(txn, 201);
+  }
+
+  // customer payees (same rules as BeneficiaryService)
+  if (path === '/api/beneficiaries' && m === 'GET') {
+    return ok(beneficiaries.filter((b) => b.customerId === me.id).sort((a, b) => a.nickname.localeCompare(b.nickname)).map(publicPayee));
+  }
+  if (path === '/api/beneficiaries' && m === 'POST') {
+    const no = String(body['accountNumber'] ?? '');
+    const nickname = String(body['nickname'] ?? '').trim();
+    if (!nickname) return fail(400, 'Please correct the highlighted fields', { errors: { nickname: 'Enter a name for this payee' } });
+    if (!/^\d{12}$/.test(no)) return fail(400, 'Please correct the highlighted fields', { errors: { accountNumber: 'Account numbers are 12 digits' } });
+    const mine = beneficiaries.filter((b) => b.customerId === me.id);
+    if (mine.some((b) => b.accountNumber === no)) return fail(409, 'You already have a payee for this account');
+    if (mine.length >= 50) return fail(400, 'You can save up to 50 payees. Remove one to add another.');
+    if (own().some((a) => a.accountNumber === no)) return fail(400, 'This is one of your own accounts. Pick it under My accounts when you move money.');
+    if (!accounts.some((a) => a.accountNumber === no)) return fail(400, 'No NovaBank account has that number');
+    const b = { id: ++beneficiarySeq, customerId: me.id, nickname, accountNumber: no, createdAt: new Date().toISOString() };
+    beneficiaries.push(b);
+    return ok(publicPayee(b), 201);
+  }
+  const payeeMatch = path.match(/^\/api\/beneficiaries\/(\d+)$/);
+  if (payeeMatch) {
+    const b = beneficiaries.find((x) => x.id === Number(payeeMatch[1]) && x.customerId === me.id);
+    if (!b) return fail(404, 'Payee not found');
+    if (m === 'GET') return ok(publicPayee(b));
+    if (m === 'PUT') {
+      const nickname = String(body['nickname'] ?? '').trim();
+      if (!nickname) return fail(400, 'Please correct the highlighted fields', { errors: { nickname: 'Enter a name for this payee' } });
+      b.nickname = nickname;
+      return ok(publicPayee(b));
+    }
+    if (m === 'DELETE') {
+      beneficiaries.splice(beneficiaries.indexOf(b), 1);
+      return ok(null, 204);
+    }
   }
 
   // admin: users
