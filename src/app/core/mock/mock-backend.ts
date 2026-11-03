@@ -1,7 +1,7 @@
 import { HttpErrorResponse, HttpInterceptorFn, HttpRequest, HttpResponse } from '@angular/common/http';
-import { Observable, delay, of, throwError } from 'rxjs';
+import { Observable, delay, of, tap, throwError } from 'rxjs';
 import {
-  Account, AccountStatus, AccountType, Beneficiary, Page, Transaction, TxnStatus, User, UserStatus,
+  Account, AccountStatus, AccountType, AuditEntry, AuditSource, Beneficiary, Page, Transaction, TxnStatus, User, UserStatus,
 } from '../models';
 
 /*
@@ -120,9 +120,89 @@ function record(t: Omit<Transaction, 'id' | 'reference' | 'createdAt' | 'complet
   return txn;
 }
 
-// ---------------------------------------------------------------- routes
+// ---------------------------------------------------------------- audit log
+// Mirrors the services: one row per state-changing request, success or failure.
+// Reads are never recorded, and no part of a password ever goes into a row.
+const audit: Record<AuditSource, AuditEntry[]> = { auth: [], accounts: [], transactions: [] };
+let auditSeq = 0;
+function audited(source: AuditSource, e: Omit<AuditEntry, 'id' | 'service' | 'correlationId' | 'sourceIp' | 'occurredAt'> & { occurredAt?: string }) {
+  audit[source].unshift({ id: ++auditSeq, service: source, occurredAt: new Date().toISOString(), correlationId: crypto.randomUUID(), sourceIp: '127.0.0.1', ...e });
+}
+const row = (action: string, targetType: string | null, targetId: string | null, actor: User | null, details: Record<string, string> = {}) => ({
+  action, targetType, targetId, actorId: actor?.id ?? null, actorRole: actor?.role ?? null, actorEmail: actor?.email ?? null,
+  outcome: 'SUCCESS' as const, httpStatus: 200, reason: null, details,
+});
+// A little history so the page has something to show.
+audited('auth', { ...row('LOGIN', 'USER', '3', null), actorEmail: 'john.carter@example.com', outcome: 'FAILURE', httpStatus: 401, reason: 'Wrong password', occurredAt: ago(0, 5) });
+audited('auth', { ...row('LOGIN', null, null, null), actorEmail: 'jon.carter@example.com', outcome: 'FAILURE', httpStatus: 401, reason: 'Unknown email', occurredAt: ago(0, 4) });
+audited('auth', { ...row('LOGIN', 'USER', '7', null), actorEmail: 'david.okafor@example.com', outcome: 'FAILURE', httpStatus: 403, reason: 'Profile is locked', occurredAt: ago(0, 3) });
+audited('auth', { ...row('USER_STATUS_CHANGE', 'USER', '7', users[0], { from: 'ACTIVE', to: 'LOCKED' }), occurredAt: ago(9) });
+
+type Rule = [method: string, pattern: RegExp, source: AuditSource, action: string, targetType: string | null];
+const AUDITED: Rule[] = [
+  ['POST', /^\/api\/auth\/login$/, 'auth', 'LOGIN', 'USER'],
+  ['POST', /^\/api\/auth\/register$/, 'auth', 'REGISTER', 'USER'],
+  ['PUT', /^\/api\/auth\/me$/, 'auth', 'PROFILE_UPDATE', 'USER'],
+  ['POST', /^\/api\/auth\/change-password$/, 'auth', 'PASSWORD_CHANGE', 'USER'],
+  ['PATCH', /^\/api\/admin\/users\/(\d+)\/status$/, 'auth', 'USER_STATUS_CHANGE', 'USER'],
+  ['POST', /^\/api\/accounts$/, 'accounts', 'ACCOUNT_OPEN', 'ACCOUNT'],
+  ['POST', /^\/api\/admin\/accounts$/, 'accounts', 'ACCOUNT_OPEN', 'ACCOUNT'],
+  ['PATCH', /^\/api\/admin\/accounts\/(\d{12})\/status$/, 'accounts', 'ACCOUNT_STATUS_CHANGE', 'ACCOUNT'],
+  ['POST', /^\/api\/transactions\/transfer$/, 'transactions', 'TRANSFER', 'TRANSACTION'],
+  ['POST', /^\/api\/admin\/transactions\/deposit$/, 'transactions', 'DEPOSIT', 'TRANSACTION'],
+  ['POST', /^\/api\/beneficiaries$/, 'transactions', 'BENEFICIARY_ADD', 'BENEFICIARY'],
+  ['PUT', /^\/api\/beneficiaries\/(\d+)$/, 'transactions', 'BENEFICIARY_RENAME', 'BENEFICIARY'],
+  ['DELETE', /^\/api\/beneficiaries\/(\d+)$/, 'transactions', 'BENEFICIARY_DELETE', 'BENEFICIARY'],
+];
+
 export const mockBackendInterceptor: HttpInterceptorFn = (req, next) => {
   if (!req.url.startsWith('/api')) return next(req);
+  const path = new URL(req.urlWithParams, 'http://mock').pathname;
+  const rule = AUDITED.find(([m, re]) => m === req.method && re.test(path));
+  if (!rule) return route(req, next);
+  const [, re, source, action, targetType] = rule;
+  const body = (req.body ?? {}) as Record<string, any>;
+  let actor = caller(req);
+  let email = actor?.email ?? null;
+  let reason: string | null = null;
+  let targetId = path.match(re)?.[1] ?? (action === 'PROFILE_UPDATE' || action === 'PASSWORD_CHANGE' ? String(actor?.id ?? '') : null);
+  if (action === 'LOGIN') {
+    // Only the email is read here. The password is compared by route() and never stored.
+    const tried = String(body['email'] ?? '').trim();
+    email = tried;
+    const u = users.find((x) => x.email === tried.toLowerCase());
+    targetId = u ? String(u.id) : null;
+    reason = !u ? 'Unknown email' : u.password !== body['password'] ? 'Wrong password' : u.status === 'LOCKED' ? 'Profile is locked' : null;
+  }
+  const details: Record<string, string> = {};
+  if (body['status']) details['to'] = String(body['status']);
+  if (body['amount']) details['amount'] = Number(body['amount']).toFixed(2);
+  if (body['fromAccount']) details['fromAccount'] = String(body['fromAccount']);
+  if (body['toAccount']) details['toAccount'] = String(body['toAccount']);
+  if (body['accountNumber']) details['accountNumber'] = String(body['accountNumber']);
+  const write = (httpStatus: number, failure: string | null, result: any) => {
+    if (action === 'LOGIN' || action === 'REGISTER') {
+      const u = result?.user as User | undefined;
+      if (u) actor = u;
+      if (!email) email = String(body['email'] ?? '').trim().toLowerCase();
+      if (u) targetId = String(u.id);
+    }
+    if (!targetId && result) targetId = String(result.reference ?? result.accountNumber ?? result.id ?? '') || null;
+    const ok = httpStatus < 400;
+    audited(source, {
+      action, targetType, targetId, actorId: ok || action !== 'LOGIN' ? actor?.id ?? null : null,
+      actorRole: ok || action !== 'LOGIN' ? actor?.role ?? null : null, actorEmail: email,
+      outcome: ok ? 'SUCCESS' : 'FAILURE', httpStatus, reason: ok ? null : reason ?? failure, details,
+    });
+  };
+  return route(req, next).pipe(tap({
+    next: (ev) => { if (ev instanceof HttpResponse) write(ev.status, null, ev.body); },
+    error: (e: HttpErrorResponse) => write(e.status, e.error?.detail ?? null, e.error),
+  }));
+};
+
+// ---------------------------------------------------------------- routes
+function route(req: HttpRequest<unknown>, next: Parameters<HttpInterceptorFn>[1]): Observable<any> {
   const url = new URL(req.urlWithParams, 'http://mock');
   const path = url.pathname;
   const q = url.searchParams;
@@ -313,6 +393,15 @@ export const mockBackendInterceptor: HttpInterceptorFn = (req, next) => {
     to!.balance = Math.round((to!.balance + amount) * 100) / 100;
     return ok(txn, 201);
   }
+  const auditPath = path.match(/^\/api\/admin\/audit\/(auth|accounts|transactions)$/);
+  if (auditPath && m === 'GET') {
+    const term = q.get('q');
+    const rows = audit[auditPath[1] as AuditSource].filter((e) => (!q.get('action') || e.action === q.get('action')) && (!q.get('outcome') || e.outcome === q.get('outcome'))
+      && (!q.get('actorId') || e.actorId === Number(q.get('actorId'))) && (!q.get('targetId') || e.targetId === q.get('targetId'))
+      && (!term || like(e.actorEmail, term) || like(e.targetId, term) || like(e.correlationId, term))
+      && (!q.get('from') || e.occurredAt >= q.get('from')!) && (!q.get('to') || e.occurredAt < q.get('to')!));
+    return ok(page(rows, q));
+  }
   if (path === '/api/system/health') {
     return ok({ overall: 'UP', checkedAt: new Date().toISOString(), services: [
       { service: 'account-service', status: 'UP', latencyMs: 14 },
@@ -321,4 +410,4 @@ export const mockBackendInterceptor: HttpInterceptorFn = (req, next) => {
     ] });
   }
   return fail(404, `No mock for ${m} ${path}`);
-};
+}
