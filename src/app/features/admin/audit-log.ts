@@ -14,12 +14,20 @@ const SOURCES: { value: AuditSource; label: string; actions: [string, string][] 
     ['LOGIN', 'Sign-in'], ['REGISTER', 'Registration'], ['PROFILE_UPDATE', 'Profile update'],
     ['PASSWORD_CHANGE', 'Password change'], ['USER_STATUS_CHANGE', 'Customer lock or unlock'],
   ] },
-  { value: 'accounts', label: 'Accounts', actions: [['ACCOUNT_OPEN', 'Account opened'], ['ACCOUNT_STATUS_CHANGE', 'Account status change']] },
+  { value: 'accounts', label: 'Accounts', actions: [['ACCOUNT_OPEN', 'Account opened'], ['ACCOUNT_STATUS_CHANGE', 'Account freeze, unfreeze or close']] },
   { value: 'transactions', label: 'Money movement and payees', actions: [
-    ['TRANSFER', 'Transfer'], ['DEPOSIT', 'Deposit'], ['BENEFICIARY_ADD', 'Payee added'],
+    ['TRANSFER', 'Transfer'], ['DEPOSIT', 'Teller deposit'], ['BENEFICIARY_ADD', 'Payee added'],
     ['BENEFICIARY_RENAME', 'Payee renamed'], ['BENEFICIARY_DELETE', 'Payee removed'], ['RECONCILE', 'Reconciliation'],
   ] },
 ];
+
+/** A yyyy-mm-dd date input as the start of that day in the viewer's time zone, as an ISO instant. */
+function startOfDay(date: string, plusDays = 0): string | null {
+  if (!date) return null;
+  const d = new Date(`${date}T00:00:00`);
+  d.setDate(d.getDate() + plusDays);
+  return d.toISOString();
+}
 
 @Component({
   selector: 'nb-audit-log',
@@ -36,19 +44,24 @@ const SOURCES: { value: AuditSource; label: string; actions: [string, string][] 
       @if (error()) { <div class="alert alert-error">{{ error() }}</div> }
       <section class="panel">
         <div class="toolbar">
-          <select class="select" [(ngModel)]="source" (ngModelChange)="action = ''; load(0)" aria-label="Which log">
-            @for (s of sources; track s.value) { <option [value]="s.value">{{ s.label }}</option> }
-          </select>
           <select class="select" [(ngModel)]="action" (ngModelChange)="load(0)" aria-label="Filter by action">
             <option value="">Any action</option>
-            @for (a of actions(); track a[0]) { <option [value]="a[0]">{{ a[1] }}</option> }
+            @for (s of sources; track s.value) {
+              <optgroup [label]="s.label">
+                @for (a of s.actions; track a[0]) { <option [value]="a[0]">{{ a[1] }}</option> }
+              </optgroup>
+            }
           </select>
           <select class="select" [(ngModel)]="outcome" (ngModelChange)="load(0)" aria-label="Filter by result">
             <option value="">Any result</option>
             <option value="SUCCESS">Succeeded</option>
             <option value="FAILURE">Failed</option>
           </select>
-          <input class="input" type="search" placeholder="Email, target or correlation id" [(ngModel)]="q" (ngModelChange)="search$.next()" aria-label="Search the audit log" />
+          <input class="input" type="search" placeholder="Who: user id or email" [(ngModel)]="actor" (ngModelChange)="search$.next()" aria-label="Filter by who made the change" />
+          <input class="input date" type="date" [(ngModel)]="from" (ngModelChange)="load(0)" aria-label="From date" />
+          <input class="input date" type="date" [(ngModel)]="to" (ngModelChange)="load(0)" aria-label="To date (inclusive)" />
+          <input class="input" type="search" placeholder="Target or correlation id" [(ngModel)]="q" (ngModelChange)="search$.next()" aria-label="Search by target or correlation id" />
+          @if (filtered()) { <button class="btn btn-secondary btn-sm" (click)="clear()">Clear filters</button> }
         </div>
         <div class="table-wrap">
           <table class="table">
@@ -56,8 +69,11 @@ const SOURCES: { value: AuditSource; label: string; actions: [string, string][] 
             <tbody>
               @for (e of page()?.content ?? []; track e.id) {
                 <tr>
-                  <td class="small muted">{{ e.occurredAt | date: 'MMM d, h:mm:ss a' }}</td>
-                  <td class="small">{{ label(e.action) }}</td>
+                  <td class="small muted">{{ e.createdAt | date: 'MMM d, h:mm:ss a' }}</td>
+                  <td class="small">
+                    {{ label(e.action) }}
+                    <div class="cell-sub">{{ sourceLabel(e.service) }}</div>
+                  </td>
                   <td class="small">
                     @if (e.actorRole === 'SYSTEM') { System }
                     @else if (e.actorId !== null) { #{{ e.actorId }} <span class="muted">{{ e.actorRole | lowercase }}</span> }
@@ -75,7 +91,7 @@ const SOURCES: { value: AuditSource; label: string; actions: [string, string][] 
                   </td>
                 </tr>
               } @empty {
-                <tr><td colspan="6"><div class="empty"><strong>Nothing recorded yet</strong>Clear the filters or pick another log.</div></td></tr>
+                <tr><td colspan="6"><div class="empty"><strong>Nothing matches</strong>Clear the filters or widen the date range.</div></td></tr>
               }
             </tbody>
           </table>
@@ -84,6 +100,7 @@ const SOURCES: { value: AuditSource; label: string; actions: [string, string][] 
       </section>
     </div>
   `,
+  styles: [`.toolbar .input.date { flex: 0 0 auto; min-width: 150px; }`],
 })
 export class AuditLog {
   private readonly api = inject(BankApi);
@@ -92,9 +109,11 @@ export class AuditLog {
   protected readonly pageNo = signal(0);
   protected readonly error = signal<string | null>(null);
   protected readonly search$ = new Subject<void>();
-  protected source: AuditSource = 'auth';
   protected action = '';
   protected outcome: AuditOutcome | '' = '';
+  protected actor = '';
+  protected from = '';
+  protected to = '';
   protected q = '';
 
   constructor() {
@@ -102,18 +121,31 @@ export class AuditLog {
     this.load(0);
   }
 
-  protected actions(): [string, string][] {
-    return SOURCES.find((s) => s.value === this.source)?.actions ?? [];
-  }
-
   protected label(action: string): string {
     return SOURCES.flatMap((s) => s.actions).find(([a]) => a === action)?.[1] ?? action;
+  }
+
+  protected sourceLabel(service: AuditSource): string {
+    return SOURCES.find((s) => s.value === service)?.label ?? service;
+  }
+
+  protected filtered(): boolean {
+    return !!(this.action || this.outcome || this.actor || this.from || this.to || this.q);
+  }
+
+  protected clear(): void {
+    this.action = this.actor = this.from = this.to = this.q = '';
+    this.outcome = '';
+    this.load(0);
   }
 
   load(n: number): void {
     this.pageNo.set(n);
     this.error.set(null);
-    this.api.auditLog(this.source, { action: this.action, outcome: this.outcome, q: this.q, page: n, size: 20 }).subscribe({
+    this.api.auditLog({
+      action: this.action, outcome: this.outcome, actor: this.actor.trim(), q: this.q.trim(),
+      from: startOfDay(this.from), to: startOfDay(this.to, 1), page: n, size: 20,
+    }).subscribe({
       next: (p) => this.page.set(p),
       error: (e) => this.error.set(problemMessage(e)),
     });
